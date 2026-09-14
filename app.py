@@ -85,6 +85,10 @@ def build_vector_store(all_chunks):
     st.session_state["chunks"] = all_chunks
     st.session_state["index"] = index
 
+def get_gdrive_id(url):
+    match = re.search(r'(?:/d/|id=)([\w-]+)', url)
+    return match.group(1) if match else None
+
 # ==================================================
 # SIDEBAR - FILE UPLOAD & GDRIVE LINK
 # ==================================================
@@ -125,24 +129,34 @@ elif source_option == "Google Drive Link":
         with st.spinner("Downloading and processing Google Drive file..."):
             try:
                 output_path = f"temp_drive_file{file_type}"
-                # gdown uses full URL directly
-                gdown.download(url=gdrive_url, output=output_path, quiet=False, fuzzy=True)
+                file_id = get_gdrive_id(gdrive_url)
+                
+                if file_id:
+                    # File ID ke zariye clean download format
+                    download_url = f"https://drive.google.com/uc?id={file_id}"
+                    gdown.download(url=download_url, output=output_path, quiet=False)
+                else:
+                    # Direct URL fallback
+                    gdown.download(url=gdrive_url, output=output_path, quiet=False)
                 
                 if os.path.exists(output_path):
                     with open(output_path, "rb") as f:
                         file_bytes = f.read()
                     
                     text = process_file_content(file_bytes, output_path)
-                    os.remove(output_path)  # Cleanup temp file
+                    
+                    # Cleanup temporary file
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
                     
                     if text:
                         all_chunks = chunk_text(text)
                         build_vector_store(all_chunks)
                         st.sidebar.success(f"Processed {len(all_chunks)} chunks from Google Drive!")
                     else:
-                        st.sidebar.error("Failed to extract text. Check file contents or permissions.")
+                        st.sidebar.error("Failed to extract text. Check file permissions ('Anyone with link').")
                 else:
-                    st.sidebar.error("File download failed. Ensure Drive link is set to 'Anyone with the link'.")
+                    st.sidebar.error("File download failed. Ensure Drive link is public.")
             except Exception as e:
                 st.sidebar.error(f"Error fetching file: {str(e)}")
 
