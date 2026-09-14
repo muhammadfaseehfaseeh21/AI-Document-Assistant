@@ -3,7 +3,7 @@ import re
 import io
 import pickle
 import hashlib
-import requests
+import gdown
 
 import streamlit as st
 import numpy as np
@@ -53,28 +53,6 @@ def extract_text_from_docx(file_bytes):
 def extract_text_from_txt(file_bytes):
     return file_bytes.decode("utf-8", errors="ignore")
 
-def extract_gdrive_file_id(url):
-    """Google Drive URL se File ID nikalta hai"""
-    match = re.search(r'(?:/d/|id=)([\w-]+)', url)
-    if match:
-        return match.group(1)
-    return None
-
-def download_from_gdrive(file_id):
-    """Google Drive Direct Export URL se file download karta hai"""
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    session = requests.Session()
-    response = session.get(download_url)
-    
-    # Large files confirmation warning handle karne ke liye
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            download_url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
-            response = session.get(download_url)
-            break
-            
-    return response.content
-
 def process_file_content(file_bytes, file_name):
     file_name = file_name.lower()
     if file_name.endswith(".pdf"):
@@ -84,7 +62,6 @@ def process_file_content(file_bytes, file_name):
     elif file_name.endswith(".txt"):
         return extract_text_from_txt(file_bytes)
     else:
-        # Default try PDF
         try:
             return extract_text_from_pdf(file_bytes)
         except Exception:
@@ -113,7 +90,6 @@ def build_vector_store(all_chunks):
 # ==================================================
 st.sidebar.header("📁 Document Source")
 
-# Source Selection
 source_option = st.sidebar.radio(
     "Choose Input Method:",
     ("Direct Upload", "Google Drive Link")
@@ -146,22 +122,29 @@ elif source_option == "Google Drive Link":
     file_type = st.sidebar.selectbox("Select File Extension:", [".pdf", ".docx", ".txt"])
     
     if gdrive_url and st.sidebar.button("Fetch & Process Drive File"):
-        file_id = extract_gdrive_file_id(gdrive_url)
-        if not file_id:
-            st.sidebar.error("Invalid Google Drive Link format!")
-        else:
-            with st.spinner("Downloading and processing Google Drive file..."):
-                try:
-                    file_bytes = download_from_gdrive(file_id)
-                    text = process_file_content(file_bytes, f"file{file_type}")
+        with st.spinner("Downloading and processing Google Drive file..."):
+            try:
+                output_path = f"temp_drive_file{file_type}"
+                # gdown uses full URL directly
+                gdown.download(url=gdrive_url, output=output_path, quiet=False, fuzzy=True)
+                
+                if os.path.exists(output_path):
+                    with open(output_path, "rb") as f:
+                        file_bytes = f.read()
+                    
+                    text = process_file_content(file_bytes, output_path)
+                    os.remove(output_path)  # Cleanup temp file
+                    
                     if text:
                         all_chunks = chunk_text(text)
                         build_vector_store(all_chunks)
                         st.sidebar.success(f"Processed {len(all_chunks)} chunks from Google Drive!")
                     else:
-                        st.sidebar.error("Failed to extract text. Make sure file access is 'Anyone with the link'.")
-                except Exception as e:
-                    st.sidebar.error(f"Error fetching file: {str(e)}")
+                        st.sidebar.error("Failed to extract text. Check file contents or permissions.")
+                else:
+                    st.sidebar.error("File download failed. Ensure Drive link is set to 'Anyone with the link'.")
+            except Exception as e:
+                st.sidebar.error(f"Error fetching file: {str(e)}")
 
 # ==================================================
 # MAIN CHAT & SEARCH INTERFACE
@@ -171,7 +154,7 @@ query = st.text_input("💬 Ask a question based on uploaded documents:")
 if query:
     if "index" in st.session_state and "chunks" in st.session_state:
         query_vector = embedder.encode([query]).astype("float32")
-        k = 3  # Top 3 matching passages
+        k = 3
         distances, indices = st.session_state["index"].search(query_vector, k)
         
         st.subheader("🔍 Top Matching Contexts:")
